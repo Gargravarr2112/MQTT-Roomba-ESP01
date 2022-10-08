@@ -11,13 +11,13 @@
 
 
 //USER CONFIGURED SECTION START//
-const char* ssid = "YOUR_WIRELESS_SSID";
-const char* password = "YOUR_WIRELESS_SSID";
-const char* mqtt_server = "YOUR_MQTT_SERVER_ADDRESS";
-const int mqtt_port = YOUR_MQTT_SERVER_PORT;
-const char *mqtt_user = "YOUR_MQTT_USERNAME";
-const char *mqtt_pass = "YOUR_MQTT_PASSWORD";
-const char *mqtt_client_name = "Roomba"; // Client connections can't have the same connection name
+const char* ssid = "QNetR";
+const char* password = "getoffmylawn";
+const char* mqtt_server = "192.168.11.10";
+const int mqtt_port = 1883;
+const char *mqtt_user = "mqtt";
+const char *mqtt_pass = "0xT4xuB3Si0xtx7S7x1wtAdfjdGCh7o7";
+const char *mqtt_client_name = "wheatley"; // Client connections can't have the same connection name
 //USER CONFIGURED SECTION END//
 
 
@@ -35,14 +35,18 @@ long battery_Current_mAh = 0;
 long battery_Voltage = 0;
 long battery_Total_mAh = 0;
 long battery_percent = 0;
+int chargingStatus = 0;
 char battery_percent_send[50];
 char battery_Current_mAh_send[50];
 uint8_t tempBuf[10];
+String status = "Idle";
+char statusBuf[14];
 
 //Functions
 
 void setup_wifi() 
 {
+  WiFi.hostname(mqtt_client_name);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) 
   {
@@ -62,15 +66,17 @@ void reconnect()
       if (client.connect(mqtt_client_name, mqtt_user, mqtt_pass, "roomba/status", 0, 0, "Dead Somewhere")) 
       {
         // Once connected, publish an announcement...
-        if(boot == false)
+        if(boot)
         {
-          client.publish("checkIn/roomba", "Reconnected"); 
-        }
-        if(boot == true)
-        {
-          client.publish("checkIn/roomba", "Rebooted");
           boot = false;
+          status = "Rebooted";
         }
+        else
+        {
+          status = "Reconnected";
+        }
+        status.toCharArray(statusBuf, 14);
+        client.publish("roomba/status", statusBuf);
         // ... and resubscribe
         client.subscribe("roomba/commands");
       } 
@@ -83,7 +89,7 @@ void reconnect()
     }
     if(retries >= 50)
     {
-    ESP.restart();
+      ESP.restart();
     }
   }
 }
@@ -99,38 +105,57 @@ void callback(char* topic, byte* payload, unsigned int length)
     {
       startCleaning();
     }
-    if (newPayload == "stop")
+    else if (newPayload == "stop")
     {
       stopCleaning();
+    }
+    else if (newPayload == "status")
+    {
+      sendInfoRoomba();
     }
   }
 }
 
-
 void startCleaning()
 {
+  wakeUp();
   Serial.write(128);
   delay(50);
   Serial.write(131);
   delay(50);
   Serial.write(135);
-  client.publish("roomba/status", "Cleaning");
+  status = "Cleaning";
+  status.toCharArray(statusBuf, 14);
+  client.publish("roomba/status", statusBuf);
 }
 
 void stopCleaning()
 {
+  wakeUp();
   Serial.write(128);
   delay(50);
   Serial.write(131);
   delay(50);
   Serial.write(143);
-  client.publish("roomba/status", "Returning");
+  status.toCharArray(statusBuf, 14);
+  client.publish("roomba/status", statusBuf);
 }
 
 void sendInfoRoomba()
 {
   roomba.start(); 
   roomba.getSensors(21, tempBuf, 1);
+  chargingStatus = tempBuf[0];
+  delay(50);
+  if (chargingStatus == 5)
+  {
+    status = "Charger Fault";
+  }
+  else if (chargingStatus > 0) //0 = Not Charging
+  {
+    status = "Charging";
+  }
+  roomba.getSensors(22, tempBuf, 1);
   battery_Voltage = tempBuf[0];
   delay(50);
   roomba.getSensors(25, tempBuf, 2);
@@ -151,36 +176,32 @@ void sendInfoRoomba()
   }
   String temp_str = String(battery_Voltage);
   temp_str.toCharArray(battery_Current_mAh_send, temp_str.length() + 1); //packaging up the data to publish to mqtt
-  client.publish("roomba/charging", battery_Current_mAh_send);
+  client.publish("roomba/charge", battery_Current_mAh_send);
+  status.toCharArray(statusBuf, 14);
+  client.publish("roomba/status", statusBuf);
 }
 
-void stayAwakeLow()
+void wakeUp()
 {
   digitalWrite(noSleepPin, LOW);
-  timer.setTimeout(1000, stayAwakeHigh);
-}
-
-void stayAwakeHigh()
-{
+  delay(1000);
   digitalWrite(noSleepPin, HIGH);
+  delay(1000);
 }
-
-
 
 void setup() 
 {
   pinMode(noSleepPin, OUTPUT);
   digitalWrite(noSleepPin, HIGH);
   Serial.begin(115200);
-  Serial.write(129);
+  Serial.write(129); //Start OI
   delay(50);
-  Serial.write(11);
+  Serial.write(11); //Baud rate to 115200
   delay(50);
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   timer.setInterval(5000, sendInfoRoomba);
-  timer.setInterval(60000, stayAwakeLow);
 }
 
 void loop() 
@@ -192,4 +213,3 @@ void loop()
   client.loop();
   timer.run();
 }
-
